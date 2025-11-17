@@ -816,6 +816,12 @@ public class XmlWorkflowServiceImpl implements XmlWorkflowService {
             //Make sure this user has a task
             grantGroupAllItemPolicies(context, wi.getItem(), group, ResourcePolicy.TYPE_WORKFLOW);
         }
+
+        // NOVO: garantir que o submitter também tenha acesso para selecionar revisores
+        EPerson submitter = wi.getItem().getSubmitter();
+        if (submitter != null) {
+            grantUserAllItemPolicies(context, wi.getItem(), submitter, ResourcePolicy.TYPE_WORKFLOW);
+        }
     }
 
     @Override

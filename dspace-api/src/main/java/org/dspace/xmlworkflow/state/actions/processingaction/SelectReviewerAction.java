@@ -11,6 +11,7 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import jakarta.annotation.Nullable;
@@ -38,12 +39,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 
 /**
  * Processing class for an action where an assigned user can
- * assign another user to review the item
+ * assign reviewers and optionally an advisor (orientador) to a workflow item.
  *
- * @author Bram De Schouwer (bram.deschouwer at dot com)
- * @author Kevin Van de Velde (kevin at atmire dot com)
- * @author Ben Bosman (ben at atmire dot com)
- * @author Mark Diggory (markd at atmire dot com)
+ * Extended by Rafael W to support advisor assignment.
  */
 public class SelectReviewerAction extends ProcessingAction {
 
@@ -52,15 +50,16 @@ public class SelectReviewerAction extends ProcessingAction {
     private static final String SUBMIT_CANCEL = "submit_cancel";
     private static final String SUBMIT_SELECT_REVIEWER = "submit_select_reviewer";
     private static final String PARAM_REVIEWER = "eperson";
+    private static final String PARAM_ADVISOR = "advisor"; // novo parâmetro para o orientador
 
     private static final String CONFIG_REVIEWER_GROUP = "action.selectrevieweraction.group";
 
     private Role role;
 
-    @Autowired(required = true)
+    @Autowired
     private EPersonService ePersonService;
 
-    @Autowired(required = true)
+    @Autowired
     private WorkflowItemRoleService workflowItemRoleService;
 
     @Autowired
@@ -74,54 +73,56 @@ public class SelectReviewerAction extends ProcessingAction {
 
     @Override
     public void activate(Context c, XmlWorkflowItem wf) {
-
+        // nothing here
     }
 
     @Override
     public ActionResult execute(Context c, XmlWorkflowItem wfi, Step step, HttpServletRequest request)
         throws SQLException, AuthorizeException {
-        String submitButton = Util.getSubmitButton(request, SUBMIT_CANCEL);
 
-        //Check if our user has pressed cancel
-        if (submitButton.equals(SUBMIT_CANCEL)) {
-            //Send us back to the submissions page
-            return new ActionResult(ActionResult.TYPE.TYPE_CANCEL);
-        } else if (submitButton.startsWith(SUBMIT_SELECT_REVIEWER)) {
-            return processSelectReviewers(c, wfi, request);
+        EPerson currentUser = c.getCurrentUser();
+        if (currentUser != null && wfi.getSubmitter() != null &&
+            currentUser.getID().equals(wfi.getSubmitter().getID())) {
+            log.info("Submitter {} executando SelectReviewerAction no item {}", currentUser.getEmail(), wfi.getID());
+        } else {
+            log.debug("Usuário {} não é o submitter do item {}",
+                currentUser != null ? currentUser.getEmail() : "desconhecido", wfi.getID());
         }
 
-        //There are only 2 active buttons on this page, so if anything else happens just return an error
+        String submitButton = Util.getSubmitButton(request, SUBMIT_CANCEL);
+
+        if (submitButton.equals(SUBMIT_CANCEL)) {
+            return new ActionResult(ActionResult.TYPE.TYPE_CANCEL);
+        } else if (submitButton.startsWith(SUBMIT_SELECT_REVIEWER)) {
+            try {
+                c.turnOffAuthorisationSystem();
+                return processSelectReviewers(c, wfi, request);
+            } finally {
+                c.restoreAuthSystemState();
+            }
+        }
+
         return new ActionResult(ActionResult.TYPE.TYPE_ERROR);
     }
 
     /**
-     * Method to handle the {@link this#SUBMIT_SELECT_REVIEWER} action:
-     * - will retrieve the reviewer(s) uuid from request (param {@link this#PARAM_REVIEWER})
-     * - assign them to a {@link WorkflowItemRole}
-     * - In {@link org.dspace.xmlworkflow.state.actions.userassignment.AutoAssignAction} these reviewer(s) will get
-     * claimed task for this {@link XmlWorkflowItem}
-     * Will result in error if:
-     * - No reviewer(s) uuid in request (param {@link this#PARAM_REVIEWER})
-     * - If none of the reviewer(s) uuid passed along result in valid EPerson
-     * - If the reviewer(s) passed along are not in {@link this#selectFromReviewsGroup} when it is set
-     *
-     * @param c       current DSpace session
-     * @param wfi     the item on which the action is to be performed
-     * @param request the current client request
-     * @return the result of performing the action
+     * Processa a seleção de revisores e a atribuição do orientador (advisor).
      */
     private ActionResult processSelectReviewers(Context c, XmlWorkflowItem wfi, HttpServletRequest request)
         throws SQLException, AuthorizeException {
-        //Retrieve the identifier of the eperson which will do the reviewing
+
+        // === 1) Processar revisores ===
         String[] reviewerIds = request.getParameterValues(PARAM_REVIEWER);
         if (ArrayUtils.isEmpty(reviewerIds)) {
+            log.warn("Nenhum revisor selecionado para o item {}", wfi.getID());
             return new ActionResult(ActionResult.TYPE.TYPE_ERROR);
         }
+
         List<EPerson> reviewers = new ArrayList<>();
         for (String reviewerId : reviewerIds) {
             EPerson reviewer = ePersonService.find(c, UUID.fromString(reviewerId));
             if (reviewer == null) {
-                log.warn("No EPerson found with uuid {}", reviewerId);
+                log.warn("EPerson não encontrado com UUID {}", reviewerId);
             } else {
                 reviewers.add(reviewer);
             }
@@ -132,18 +133,69 @@ public class SelectReviewerAction extends ProcessingAction {
         }
 
         createWorkflowItemRole(c, wfi, reviewers);
+
+        // === 2) Processar orientador (advisor) ===
+        String advisorId = request.getParameter(PARAM_ADVISOR);
+        if (StringUtils.isNotBlank(advisorId)) {
+            try {
+                EPerson advisor = ePersonService.find(c, UUID.fromString(advisorId));
+                if (advisor == null) {
+                    log.warn("Advisor não encontrado para UUID {}", advisorId);
+                } else {
+                    assignAdvisorRole(c, wfi, advisor);
+                }
+            } catch (IllegalArgumentException ex) {
+                log.warn("UUID inválido para orientador: {}", advisorId);
+            }
+        } else {
+            log.info("Nenhum orientador foi selecionado para o item {}", wfi.getID());
+        }
+
         return new ActionResult(ActionResult.TYPE.TYPE_OUTCOME, ActionResult.OUTCOME_COMPLETE);
     }
 
+    /**
+     * Atribui o orientador (advisor) ao WorkflowItem, criando ou atualizando a role correspondente.
+     */
+    private void assignAdvisorRole(Context c, XmlWorkflowItem wfi, EPerson advisor)
+        throws SQLException, AuthorizeException {
+
+        String advisorRoleId = "advisor"; // deve corresponder ao ID definido no workflow.xml
+
+        List<WorkflowItemRole> roles = workflowItemRoleService.findByWorkflowItem(c, wfi);
+        Optional<WorkflowItemRole> existing = roles.stream()
+            .filter(r -> advisorRoleId.equals(r.getRoleId()))
+            .findFirst();
+
+        if (existing.isPresent()) {
+            WorkflowItemRole wir = existing.get();
+            if (wir.getEPerson() == null ||
+                !advisor.getID().equals(wir.getEPerson().getID())) {
+                wir.setEPerson(advisor);
+                workflowItemRoleService.update(c, wir);
+                log.info("Orientador atualizado para o item {}: {}", wfi.getID(), advisor.getEmail());
+            } else {
+                log.info("Orientador já associado corretamente ao item {}", wfi.getID());
+            }
+        } else {
+            WorkflowItemRole wir = workflowItemRoleService.create(c);
+            wir.setRoleId(advisorRoleId);
+            wir.setWorkflowItem(wfi);
+            wir.setEPerson(advisor);
+            workflowItemRoleService.update(c, wir);
+            log.info("Orientador {} associado ao item {}", advisor.getEmail(), wfi.getID());
+        }
+    }
+
     private boolean checkReviewersValid(Context c, List<EPerson> reviewers) throws SQLException {
-        if (reviewers.size() == 0) {
+        if (reviewers.isEmpty()) {
             return false;
         }
         Group group = this.getGroup(c);
         if (group != null) {
-            for (EPerson reviewer: reviewers) {
+            for (EPerson reviewer : reviewers) {
                 if (!groupService.isMember(c, reviewer, group)) {
-                    log.error("Reviewers selected must be member of group {}", group.getID());
+                    log.error("Reviewer {} não pertence ao grupo {}", reviewer.getEmail(), group.getID());
                     return false;
                 }
             }
@@ -153,15 +205,14 @@ public class SelectReviewerAction extends ProcessingAction {
 
     private WorkflowItemRole createWorkflowItemRole(Context c, XmlWorkflowItem wfi, List<EPerson> reviewers)
         throws SQLException, AuthorizeException {
+
         WorkflowItemRole workflowItemRole = workflowItemRoleService.create(c);
         workflowItemRole.setRoleId(getRole().getId());
         workflowItemRole.setWorkflowItem(wfi);
+
         if (reviewers.size() == 1) {
-            // 1 reviewer in workflowitemrole => will be translated into a claimed task in the autoassign
             workflowItemRole.setEPerson(reviewers.get(0));
         } else {
-            // multiple reviewers, create a temporary group and assign this group, the workflowitemrole will be
-            // translated into a claimed task for reviewers in the autoassign, where group will be deleted
             c.turnOffAuthorisationSystem();
             Group selectedReviewsGroup = groupService.create(c);
             groupService.setName(selectedReviewsGroup, "selectedReviewsGroup_" + wfi.getID());
@@ -171,6 +222,7 @@ public class SelectReviewerAction extends ProcessingAction {
             workflowItemRole.setGroup(selectedReviewsGroup);
             c.restoreAuthSystemState();
         }
+
         workflowItemRoleService.update(c, workflowItemRole);
         return workflowItemRole;
     }
@@ -188,16 +240,23 @@ public class SelectReviewerAction extends ProcessingAction {
         return Arrays.asList(SUBMIT_SELECT_REVIEWER);
     }
 
+    /**
+     * Adiciona informações avançadas para a UI (inclusive que deve mostrar campo de orientador).
+     */
     @Override
     protected List<ActionAdvancedInfo> getAdvancedInfo() {
         List<ActionAdvancedInfo> advancedInfo = new ArrayList<>();
-        SelectReviewerActionAdvancedInfo selectReviewerActionAdvancedInfo = new SelectReviewerActionAdvancedInfo();
+        SelectReviewerActionAdvancedInfo info = new SelectReviewerActionAdvancedInfo();
+
         if (getGroup(null) != null) {
-            selectReviewerActionAdvancedInfo.setGroup(getGroup(null).getID().toString());
+            info.setGroup(getGroup(null).getID().toString());
         }
-        selectReviewerActionAdvancedInfo.setType(SUBMIT_SELECT_REVIEWER);
-        selectReviewerActionAdvancedInfo.generateId(SUBMIT_SELECT_REVIEWER);
-        advancedInfo.add(selectReviewerActionAdvancedInfo);
+
+        info.setType(SUBMIT_SELECT_REVIEWER);
+        info.setAdvisorRequired(true); // <- informa ao frontend que o campo de orientador é obrigatório
+        info.generateId(SUBMIT_SELECT_REVIEWER);
+
+        advancedInfo.add(info);
         return advancedInfo;
     }
 
@@ -205,17 +264,11 @@ public class SelectReviewerAction extends ProcessingAction {
         return role;
     }
 
-    @Autowired(required = true)
+    @Autowired
     public void setRole(Role role) {
         this.role = role;
     }
 
-    /**
-     * Get the Reviewer group from the "action.selectrevieweraction.group" property in actions.cfg by its UUID or name
-     * Returns null if no (valid) group configured
-     *
-     * @return configured reviewers Group from property or null if none
-     */
     private Group getGroup(@Nullable Context context) {
         if (selectFromReviewsGroupInitialised) {
             return this.selectFromReviewsGroup;
@@ -228,17 +281,13 @@ public class SelectReviewerAction extends ProcessingAction {
         if (StringUtils.isNotBlank(groupIdOrName)) {
             Group group = null;
             try {
-                // try to get group by name
                 group = groupService.findByName(context, groupIdOrName);
                 if (group == null) {
-                    // try to get group by uuid if not a name
                     group = groupService.find(context, UUID.fromString(groupIdOrName));
                 }
             } catch (Exception e) {
-                // There is an issue with the reviewer group that is set; if it is not set then can be chosen
-                // from all epeople
-                log.error("Issue with determining matching group for config {}={} for reviewer group of " +
-                    "select reviewers workflow", CONFIG_REVIEWER_GROUP, groupIdOrName);
+                log.error("Erro ao determinar o grupo de revisores configurado: {}={}",
+                    CONFIG_REVIEWER_GROUP, groupIdOrName);
             }
 
             this.selectFromReviewsGroup = group;
@@ -247,10 +296,7 @@ public class SelectReviewerAction extends ProcessingAction {
         return this.selectFromReviewsGroup;
     }
 
-    /**
-     * To be used by IT, e.g. {@code XmlWorkflowServiceIT}, when defining new 'Reviewers' group
-     */
-    static public void resetGroup() {
+    public static void resetGroup() {
         selectFromReviewsGroup = null;
         selectFromReviewsGroupInitialised = false;
     }

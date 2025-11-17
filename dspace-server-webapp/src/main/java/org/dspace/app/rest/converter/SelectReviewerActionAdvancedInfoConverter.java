@@ -25,6 +25,10 @@ public class SelectReviewerActionAdvancedInfoConverter
         restModel.setGroup(modelObject.getGroup());
         restModel.setType(modelObject.getType());
         restModel.setId(modelObject.getId());
+
+        // 🆕 Novo campo - se o modelo tiver suporte para indicar necessidade de orientador
+        restModel.setAdvisorRequired(modelObject.isAdvisorRequired());
+
         return restModel;
     }
 

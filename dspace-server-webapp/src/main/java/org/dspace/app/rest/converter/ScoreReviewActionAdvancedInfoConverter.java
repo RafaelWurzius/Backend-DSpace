@@ -12,18 +12,23 @@ import org.dspace.app.rest.projection.Projection;
 import org.dspace.xmlworkflow.state.actions.processingaction.ScoreReviewActionAdvancedInfo;
 
 /**
- * This converter is responsible for transforming the model representation of a ScoreReviewActionAdvancedInfo to
- * the REST representation of a ScoreReviewActionAdvancedInfo
+ * This converter is responsible for transforming the model representation of a ScoreReviewActionAdvancedInfo
+ * to the REST representation of a ScoreReviewActionAdvancedInfo.
+ *
+ * Updated to support decimal (floating-point) maxValue.
  */
 public class ScoreReviewActionAdvancedInfoConverter
     implements DSpaceConverter<ScoreReviewActionAdvancedInfo, ScoreReviewActionAdvancedInfoRest> {
 
     @Override
     public ScoreReviewActionAdvancedInfoRest convert(ScoreReviewActionAdvancedInfo modelObject,
-                                                      Projection projection) {
+                                                     Projection projection) {
         ScoreReviewActionAdvancedInfoRest restModel = new ScoreReviewActionAdvancedInfoRest();
         restModel.setDescriptionRequired(modelObject.isDescriptionRequired());
+
+        // ✅ Garantir que o valor decimal seja transferido corretamente
         restModel.setMaxValue(modelObject.getMaxValue());
+
         restModel.setType(modelObject.getType());
         restModel.setId(modelObject.getId());
         return restModel;

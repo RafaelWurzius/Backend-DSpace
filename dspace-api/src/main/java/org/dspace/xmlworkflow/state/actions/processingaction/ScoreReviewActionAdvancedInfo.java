@@ -16,8 +16,11 @@ import org.springframework.util.DigestUtils;
  * See config {@code workflow-actions.cfg}
  */
 public class ScoreReviewActionAdvancedInfo extends ActionAdvancedInfo {
+
     private boolean descriptionRequired;
-    private int maxValue;
+
+    // 🔹 Alterado de int → double para permitir valores decimais
+    private double maxValue;
 
     public boolean isDescriptionRequired() {
         return descriptionRequired;
@@ -27,19 +30,20 @@ public class ScoreReviewActionAdvancedInfo extends ActionAdvancedInfo {
         this.descriptionRequired = descriptionRequired;
     }
 
-    public int getMaxValue() {
+    public double getMaxValue() {
         return maxValue;
     }
 
-    public void setMaxValue(int maxValue) {
+    public void setMaxValue(double maxValue) {
         this.maxValue = maxValue;
     }
 
     @Override
     public void generateId(String type) {
+        // 🔹 Inclui o valor decimal formatado corretamente (ex.: "10.0" ao invés de "10")
         String idString = type
             + ";descriptionRequired," + descriptionRequired
-            + ";maxValue," + maxValue;
+            + ";maxValue," + String.format("%.2f", maxValue);
         super.id = DigestUtils.md5DigestAsHex(idString.getBytes());
     }
 }

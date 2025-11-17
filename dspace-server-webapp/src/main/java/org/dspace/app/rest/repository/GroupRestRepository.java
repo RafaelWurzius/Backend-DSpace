@@ -22,42 +22,60 @@ import org.dspace.app.rest.converter.MetadataConverter;
 import org.dspace.app.rest.exception.GroupNameNotProvidedException;
 import org.dspace.app.rest.exception.RepositoryMethodNotImplementedException;
 import org.dspace.app.rest.exception.UnprocessableEntityException;
+import org.dspace.app.rest.model.EPersonRest;
 import org.dspace.app.rest.model.GroupRest;
 import org.dspace.app.rest.model.patch.Patch;
 import org.dspace.authorize.AuthorizeException;
+import org.dspace.authorize.service.AuthorizeService;
 import org.dspace.content.DSpaceObject;
 import org.dspace.core.Context;
+import org.dspace.eperson.EPerson;
 import org.dspace.eperson.Group;
 import org.dspace.eperson.service.GroupService;
+import org.dspace.xmlworkflow.storedcomponents.XmlWorkflowItem;
+import org.dspace.xmlworkflow.storedcomponents.service.XmlWorkflowItemService;
+import org.dspace.services.ConfigurationService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.rest.webmvc.ResourceNotFoundException;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Component;
 
 /**
  * This is the repository responsible to manage Group Rest object
  *
- * @author Andrea Bollini (andrea.bollini at 4science.it)
+ * @author Andrea Bollini
+ * Modified to allow submitter/reviewmanager access to reviewer group members.
  */
 
 @Component(GroupRest.CATEGORY + "." + GroupRest.PLURAL_NAME)
 public class GroupRestRepository extends DSpaceObjectRestRepository<Group, GroupRest> {
+
     @Autowired
-    GroupService gs;
+    private GroupService gs;
 
     @Autowired
     private ObjectMapper mapper;
+
+    @Autowired
+    private MetadataConverter metadataConverter;
+
+    @Autowired
+    private AuthorizeService authorizeService;
+
+    @Autowired
+    private XmlWorkflowItemService xmlWorkflowItemService;
+
+    @Autowired
+    private ConfigurationService configurationService;
 
     @Autowired
     GroupRestRepository(GroupService dsoService) {
         super(dsoService);
         this.gs = dsoService;
     }
-
-    @Autowired
-    MetadataConverter metadataConverter;
 
     @Override
     @PreAuthorize("hasAuthority('ADMIN')")
@@ -105,6 +123,61 @@ public class GroupRestRepository extends DSpaceObjectRestRepository<Group, Group
         return converter.toRest(group, utils.obtainProjection());
     }
 
+    /**
+     * Custom method to expose members of a group (GET /api/eperson/groups/{uuid}/epersons)
+     * allowing submitter and reviewmanagers to see reviewer group members.
+     */
+    @PreAuthorize("isAuthenticated()")
+    public Page<EPersonRest> getGroupMembers(UUID groupId, Pageable pageable) {
+        Context context = obtainContext();
+        EPerson currentUser = context.getCurrentUser();
+
+        try {
+            Group group = gs.find(context, groupId);
+            if (group == null) {
+                throw new ResourceNotFoundException("Group not found: " + groupId);
+            }
+
+            // Admins always can
+            if (authorizeService.isAdmin(context)) {
+                return getMembersPage(context, group, pageable);
+            }
+
+            // If user is member of group itself, allow
+            if (gs.isMember(context, currentUser, group)) {
+                return getMembersPage(context, group, pageable);
+            }
+
+            // Special: allow submitter and reviewmanagers to read reviewer group members
+            String reviewerGroupName = configurationService.getProperty("action.selectrevieweraction.group");
+            if (reviewerGroupName != null && group.getName().equalsIgnoreCase(reviewerGroupName)) {
+
+                // Allow submitter with any workflow item
+                List<XmlWorkflowItem> wfItems = xmlWorkflowItemService.findBySubmitter(context, currentUser);
+                if (wfItems != null && !wfItems.isEmpty()) {
+                    return getMembersPage(context, group, pageable);
+                }
+
+                // Allow reviewmanagers
+                Group reviewManagers = gs.findByName(context, "reviewmanagers");
+                if (reviewManagers != null && gs.isMember(context, currentUser, reviewManagers)) {
+                    return getMembersPage(context, group, pageable);
+                }
+            }
+
+            throw new AccessDeniedException("Access denied to group members");
+
+        } catch (SQLException e) {
+            throw new RuntimeException("Error accessing group members", e);
+        }
+    }
+
+    private Page<EPersonRest> getMembersPage(Context context, Group group, Pageable pageable) throws SQLException {
+        List<EPerson> members = gs.allMembers(context, group);
+        long total = members.size();
+        return converter.toRestPage(members, pageable, total, utils.obtainProjection());
+    }
+
     @PreAuthorize("hasAuthority('ADMIN')")
     @Override
     public Page<GroupRest> findAll(Context context, Pageable pageable) {
@@ -125,20 +198,10 @@ public class GroupRestRepository extends DSpaceObjectRestRepository<Group, Group
         patchDSpaceObject(apiCategory, model, id, patch);
     }
 
-
-    /**
-     * Find the groups matching the query parameter. The search is delegated to the
-     * {@link GroupService#search(Context, String, int, int)} method
-     *
-     * @param query    is the *required* query string
-     * @param pageable contains the pagination information
-     * @return a Page of GroupRest instances matching the user query
-     */
     @PreAuthorize("hasAuthority('ADMIN') || hasAuthority('MANAGE_ACCESS_GROUP')")
     @SearchRestMethod(name = "byMetadata")
     public Page<GroupRest> findByMetadata(@Parameter(value = "query", required = true) String query,
                                           Pageable pageable) {
-
         try {
             Context context = obtainContext();
             long total = gs.searchResultCount(context, query);
@@ -150,22 +213,11 @@ public class GroupRestRepository extends DSpaceObjectRestRepository<Group, Group
         }
     }
 
-    /**
-     * Find the Groups matching the query parameter which are NOT a member of the given parent Group.
-     * The search is delegated to the
-     * {@link GroupService#searchNonMembers(Context, String, Group, int, int)} method
-     *
-     * @param groupUUID the parent group UUID
-     * @param query    is the *required* query string
-     * @param pageable contains the pagination information
-     * @return a Page of GroupRest instances matching the user query
-     */
     @PreAuthorize("hasAuthority('ADMIN') || hasAuthority('MANAGE_ACCESS_GROUP')")
     @SearchRestMethod(name = "isNotMemberOf")
     public Page<GroupRest> findIsNotMemberOf(@Parameter(value = "group", required = true) UUID groupUUID,
                                              @Parameter(value = "query", required = true) String query,
                                              Pageable pageable) {
-
         try {
             Context context = obtainContext();
             Group excludeParentGroup = gs.find(context, groupUUID);
@@ -215,5 +267,4 @@ public class GroupRestRepository extends DSpaceObjectRestRepository<Group, Group
             throw new RuntimeException(e.getMessage(), e);
         }
     }
-
 }

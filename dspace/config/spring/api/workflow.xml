@@ -12,8 +12,7 @@
             <util:map>
                 <entry key="defaultWorkflow"
                        value-ref="defaultWorkflow"/>
-<!--                <entry key="123456789/4" value-ref="selectSingleReviewer"/>-->
-<!--                <entry key="123456789/5" value-ref="scoreReview"/>-->
+                <entry key="123456789/20" value-ref="selectAndScoreReview"/>
             </util:map>
         </property>
     </bean>
@@ -59,12 +58,12 @@
     </bean>
 
     <bean name="editstep" class="org.dspace.xmlworkflow.state.Step">
-        <property name="userSelectionMethod" ref="claimaction"/>
-        <property name="role" ref="editor" />
+        <property name="userSelectionMethod" ref="originalSubmitterAssignAction"/>
+        <property name="role" ref="aluno" />
         <property name="outcomes">
             <util:map>
                 <entry key="#{ T(org.dspace.xmlworkflow.state.actions.ActionResult).OUTCOME_COMPLETE}"
-                       value-ref="finaleditstep"/>
+                       value-ref="advisorReviewStep"/> 
             </util:map>
         </property>
         <property name="actions">
@@ -111,17 +110,16 @@
 
     <bean name="selectReviewerStep" class="org.dspace.xmlworkflow.state.Step">
         <property name="userSelectionMethod" ref="claimaction"/>
-        <property name="role" ref="reviewmanagers">
-        </property>
+        <property name="role" ref="reviewmanagers"/>
         <property name="actions">
             <list>
-                <ref bean="selectrevieweraction" />
+                <ref bean="selectrevieweraction"/>
             </list>
         </property>
         <property name="outcomes">
             <util:map>
                 <entry key="#{ T(org.dspace.xmlworkflow.state.actions.ActionResult).OUTCOME_COMPLETE}"
-                       value-ref="singleUserReviewStep"/>
+                       value-ref="scoreReviewStep"/>
             </util:map>
         </property>
     </bean>
@@ -154,7 +152,6 @@
         <property name="deleteTemporaryGroup" value="true"/>
     </bean>
 
-
     <!--Workflow where a number of users will perform reviews on an item and depending on the scores the item will be archived/rejected-->
     <bean name="scoreReview" class="org.dspace.xmlworkflow.state.Workflow">
         <property name="firstStep" ref="scoreReviewStep"/>
@@ -168,11 +165,11 @@
 
     <bean name="scoreReviewStep" class="org.dspace.xmlworkflow.state.Step">
         <property name="userSelectionMethod" ref="claimaction"/>
-        <property name="role" ref="scorereviewers"/>
+        <property name="role" ref="scoreassignedreviewer"/> 
         <property name="outcomes">
             <util:map>
                 <entry key="#{ T(org.dspace.xmlworkflow.state.actions.ActionResult).OUTCOME_COMPLETE}"
-                       value-ref="evaluationStep"/>
+                       value-ref="editstep"/>
             </util:map>
         </property>
         <property name="actions">
@@ -196,4 +193,53 @@
         <property name="scope" value="#{ T(org.dspace.xmlworkflow.Role.Scope).COLLECTION}"/>
         <property name="name" value="ScoreReviewers"/>
     </bean>
+
+    <!-- Novo workflow -->
+    <bean name="selectAndScoreReview" class="org.dspace.xmlworkflow.state.Workflow">
+        <property name="firstStep" ref="scoreReviewStep"/>
+        <property name="steps">
+            <util:list> 
+                <!-- Passo 1: Professor da disciplina de TCC seleciona a banca -->
+                <ref bean="selectReviewerStep"/>
+                <!-- Passo 2: Revisores dão nota -->
+                <ref bean="scoreReviewStep"/>
+                <!-- Passo 3: Aluno realiza as correções -->
+                <ref bean="editstep"/>
+                <!-- Passo 4: Orientador valida as correções  -->
+                <ref bean="advisorReviewStep"/>
+                <!-- Passo 5: Professor da disciplina de TCC aprova -->
+                <ref bean="finaleditstep"/> 
+            </util:list>
+        </property>
+    </bean>
+
+    <bean id="aluno" class="org.dspace.xmlworkflow.Role">
+        <property name="scope" value="#{ T(org.dspace.xmlworkflow.Role.Scope).ITEM }"/>
+        <property name="name" value="Aluno"/>
+        <property name="description" value="Usuário responsável por revisar o item submetido e reenviar após correções."/>
+        <property name="deleteTemporaryGroup" value="true"/>
+    </bean>
+
+    <bean id="advisor" class="org.dspace.xmlworkflow.Role">
+        <property name="scope" value="#{ T(org.dspace.xmlworkflow.Role.Scope).ITEM }"/>
+        <property name="name" value="Orientador"/>
+        <property name="description" value="Usuário responsável por revisar o item após correções."/>
+    </bean>
+
+    <bean id="advisorReviewStep" class="org.dspace.xmlworkflow.state.Step">
+        <property name="userSelectionMethod" ref="autoassignAction"/>
+        <property name="outcomes">
+            <util:map>
+                <entry key="#{ T(org.dspace.xmlworkflow.state.actions.ActionResult).OUTCOME_COMPLETE}"
+                       value-ref="finaleditstep"/>
+            </util:map>
+        </property>
+        <property name="role" ref="advisor"/>
+        <property name="actions">
+            <list>
+                <ref bean="editaction"/>
+            </list>
+        </property>
+    </bean>
 </beans>
+

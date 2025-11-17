@@ -10,11 +10,13 @@ package org.dspace.app.rest.model;
 /**
  * The ScoreReviewActionAdvancedInfo REST Resource,
  * see {@link org.dspace.xmlworkflow.state.actions.processingaction.ScoreReviewActionAdvancedInfo}
+ *
+ * Updated to support decimal (floating-point) scores.
  */
 public class ScoreReviewActionAdvancedInfoRest extends AdvancedInfoRest {
 
     private boolean descriptionRequired;
-    private int maxValue;
+    private double maxValue; // Changed from int → double
 
     public boolean isDescriptionRequired() {
         return descriptionRequired;
@@ -24,12 +26,11 @@ public class ScoreReviewActionAdvancedInfoRest extends AdvancedInfoRest {
         this.descriptionRequired = descriptionRequired;
     }
 
-    public int getMaxValue() {
+    public double getMaxValue() {
         return maxValue;
     }
 
-    public void setMaxValue(int maxValue) {
+    public void setMaxValue(double maxValue) {
         this.maxValue = maxValue;
     }
-
 }

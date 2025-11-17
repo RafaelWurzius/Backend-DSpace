@@ -27,78 +27,97 @@ import org.dspace.xmlworkflow.state.actions.ActionResult;
 import org.dspace.xmlworkflow.storedcomponents.XmlWorkflowItem;
 
 /**
- * Processing class for the score evaluation action
- * This action will allow multiple users to rate a certain item
- * if the mean of this score is higher then the minimum score the
- * item will be sent to the next action/step else it will be rejected
+ * Processing class for the score evaluation action.
+ * This action evaluates the mean score of reviewers. If the mean score
+ * is higher than the configured minimum, the item proceeds; otherwise, it is rejected.
  *
- * @author Bram De Schouwer (bram.deschouwer at dot com)
- * @author Kevin Van de Velde (kevin at atmire dot com)
- * @author Ben Bosman (ben at atmire dot com)
- * @author Mark Diggory (markd at atmire dot com)
+ * Now supports decimal (floating-point) scores, e.g. 8.5, 9.25, etc.
  */
 public class ScoreEvaluationAction extends ProcessingAction {
 
-    // Minimum aggregate of scores
-    private int minimumAcceptanceScore;
+    // Minimum aggregate of scores (can be decimal now)
+    private double minimumAcceptanceScore;
 
     @Override
     public void activate(Context c, XmlWorkflowItem wf) {
-
+        // No activation logic needed
     }
 
     @Override
     public ActionResult execute(Context c, XmlWorkflowItem wfi, Step step, HttpServletRequest request)
         throws SQLException, AuthorizeException, IOException {
-        // Retrieve all our scores from the metadata & add em up
-        int scoreMean = getMeanScore(wfi);
-        //We have passed if we have at least gained our minimum score
-        boolean hasPassed = getMinimumAcceptanceScore() <= scoreMean;
-        //Whether or not we have passed, clear our score information
-        itemService.clearMetadata(c, wfi.getItem(), SCORE_FIELD.schema, SCORE_FIELD.element, SCORE_FIELD.qualifier,
-            Item.ANY);
+
+        // Retrieve the mean score (now supports decimals)
+        double scoreMean = getMeanScore(wfi);
+
+        // Check if item passes the minimum required score
+        boolean hasPassed = scoreMean >= minimumAcceptanceScore;
+
+        // Clear all score metadata after processing
+        itemService.clearMetadata(c, wfi.getItem(), SCORE_FIELD.schema, SCORE_FIELD.element, SCORE_FIELD.qualifier, Item.ANY);
+
         if (hasPassed) {
-            this.addRatingInfoToProv(c, wfi, scoreMean);
+            addRatingInfoToProv(c, wfi, scoreMean);
             return new ActionResult(ActionResult.TYPE.TYPE_OUTCOME, ActionResult.OUTCOME_COMPLETE);
         } else {
-            //We haven't passed, reject our item
             XmlWorkflowServiceFactory.getInstance().getXmlWorkflowService()
-                .sendWorkflowItemBackSubmission(c, wfi, c.getCurrentUser(), this.getProvenanceStartId(),
-                    "The item was reject due to a bad review score.");
+                .sendWorkflowItemBackSubmission(c, wfi, c.getCurrentUser(), getProvenanceStartId(),
+                    "The item was rejected due to a low review score.");
             return new ActionResult(ActionResult.TYPE.TYPE_SUBMISSION_PAGE);
         }
     }
 
-    private int getMeanScore(XmlWorkflowItem wfi) {
+    /**
+     * Calculates the mean (average) score of all reviewer ratings.
+     * Supports decimal values such as 8.5 or 9.25.
+     */
+    private double getMeanScore(XmlWorkflowItem wfi) {
         List<MetadataValue> scores = itemService
             .getMetadata(wfi.getItem(), SCORE_FIELD.schema, SCORE_FIELD.element, SCORE_FIELD.qualifier, Item.ANY);
-        int scoreMean = 0;
-        if (0 < scores.size()) {
-            int totalScoreCount = 0;
-            for (MetadataValue score : scores) {
-                totalScoreCount += Integer.parseInt(score.getValue());
-            }
-            scoreMean = totalScoreCount / scores.size();
+
+        if (scores.isEmpty()) {
+            return 0.0;
         }
-        return scoreMean;
+
+        double totalScore = 0.0;
+        int validScores = 0;
+
+        for (MetadataValue score : scores) {
+            try {
+                totalScore += Double.parseDouble(score.getValue());
+                validScores++;
+            } catch (NumberFormatException e) {
+                // Simply skip invalid or malformed score values
+            }
+        }
+
+        return validScores > 0 ? totalScore / validScores : 0.0;
     }
 
-    private void addRatingInfoToProv(Context c, XmlWorkflowItem wfi, int scoreMean)
+    /**
+     * Adds a provenance entry with the average score and review notes.
+     */
+    private void addRatingInfoToProv(Context c, XmlWorkflowItem wfi, double scoreMean)
         throws SQLException, AuthorizeException {
+
         StringBuilder provDescription = new StringBuilder();
-        provDescription.append(String.format("%s Approved for entry into archive with a score of: %s",
+        provDescription.append(String.format("%s Approved for entry into archive with a score of: %.2f",
             getProvenanceStartId(), scoreMean));
+
         List<MetadataValue> reviews = itemService
             .getMetadata(wfi.getItem(), REVIEW_FIELD.schema, REVIEW_FIELD.element, REVIEW_FIELD.qualifier, Item.ANY);
+
         if (!reviews.isEmpty()) {
             provDescription.append(" | Reviews: ");
+            for (MetadataValue review : reviews) {
+                provDescription.append(String.format("; %s", review.getValue()));
+            }
         }
-        for (MetadataValue review : reviews) {
-            provDescription.append(String.format("; %s", review.getValue()));
-        }
+
         c.turnOffAuthorisationSystem();
-        itemService.addMetadata(c, wfi.getItem(), MetadataSchemaEnum.DC.getName(),
-            "description", "provenance", "en", provDescription.toString());
+        itemService.addMetadata(c, wfi.getItem(),
+            MetadataSchemaEnum.DC.getName(), "description", "provenance", "en",
+            provDescription.toString());
         itemService.update(c, wfi.getItem());
         c.restoreAuthSystemState();
     }
@@ -110,11 +129,11 @@ public class ScoreEvaluationAction extends ProcessingAction {
         return options;
     }
 
-    public int getMinimumAcceptanceScore() {
+    public double getMinimumAcceptanceScore() {
         return minimumAcceptanceScore;
     }
 
-    public void setMinimumAcceptanceScore(int minimumAcceptanceScore) {
+    public void setMinimumAcceptanceScore(double minimumAcceptanceScore) {
         this.minimumAcceptanceScore = minimumAcceptanceScore;
     }
 }

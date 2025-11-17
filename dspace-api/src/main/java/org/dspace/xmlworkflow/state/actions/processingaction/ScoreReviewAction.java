@@ -30,9 +30,8 @@ import org.dspace.xmlworkflow.state.actions.ActionResult;
 import org.dspace.xmlworkflow.storedcomponents.XmlWorkflowItem;
 
 /**
- * This action will allow multiple users to rate a certain item
- * if the mean of this score is higher then the minimum score the
- * item will be sent to the next action/step else it will be rejected
+ * This action allows multiple users to rate an item.
+ * Supports decimal (float) scores instead of only integers.
  */
 public class ScoreReviewAction extends ProcessingAction {
     private static final Logger log = LogManager.getLogger(ScoreReviewAction.class);
@@ -56,7 +55,7 @@ public class ScoreReviewAction extends ProcessingAction {
     // Whether or not it is required that a text review is added to the rating
     private boolean descriptionRequired;
     // Maximum value rating is allowed to be
-    private int maxValue;
+    private double maxValue; // 🔹 Alterado de int → double para compatibilidade
 
     @Override
     public void activate(Context c, XmlWorkflowItem wf) {
@@ -76,21 +75,43 @@ public class ScoreReviewAction extends ProcessingAction {
     private ActionResult processSetRating(Context c, XmlWorkflowItem wfi, HttpServletRequest request)
         throws SQLException, AuthorizeException {
 
-        int score = Util.getIntParameter(request, SCORE);
+        // 🔹 Aceita valores decimais
+        double score = getDoubleParameter(request, SCORE);
+
         String review = request.getParameter(REVIEW);
         if (!this.checkRequestValid(score, review)) {
             return new ActionResult(ActionResult.TYPE.TYPE_ERROR);
         }
-        //Add our rating and review to the metadata
-        itemService.addMetadata(c, wfi.getItem(), SCORE_FIELD.schema, SCORE_FIELD.element, SCORE_FIELD.qualifier, null,
-            String.valueOf(score));
+
+        // 🔹 Salva com o valor real (ex: "8.5") em vez de inteiro
+        itemService.addMetadata(c, wfi.getItem(),
+                SCORE_FIELD.schema, SCORE_FIELD.element, SCORE_FIELD.qualifier, null,
+                String.valueOf(score));
+
         if (StringUtils.isNotBlank(review)) {
-            itemService.addMetadata(c, wfi.getItem(), REVIEW_FIELD.schema, REVIEW_FIELD.element,
-                REVIEW_FIELD.qualifier, null, String.format("%s - %s", score, review));
+            itemService.addMetadata(c, wfi.getItem(),
+                    REVIEW_FIELD.schema, REVIEW_FIELD.element, REVIEW_FIELD.qualifier, null,
+                    String.format("%.2f - %s", score, review));
         }
+
         itemService.update(c, wfi.getItem());
 
         return new ActionResult(ActionResult.TYPE.TYPE_OUTCOME, ActionResult.OUTCOME_COMPLETE);
+    }
+
+    /**
+     * Helper method to parse double safely.
+     */
+    private double getDoubleParameter(HttpServletRequest request, String param) {
+        try {
+            String value = request.getParameter(param);
+            if (StringUtils.isNotBlank(value)) {
+                return Double.parseDouble(value.replace(",", ".")); // 🔹 aceita vírgula ou ponto
+            }
+        } catch (NumberFormatException e) {
+            log.warn("Invalid score format received: {}", request.getParameter(param));
+        }
+        return -1.0; // valor padrão de erro
     }
 
     /**
@@ -98,12 +119,8 @@ public class ScoreReviewAction extends ProcessingAction {
      * - Given score is higher than configured maxValue
      * - There is no review given and description is configured to be required
      * Config in workflow-actions.xml
-     *
-     * @param score  Given score rating from request
-     * @param review Given review/description from request
-     * @return True if valid request params with config, otherwise false
      */
-    private boolean checkRequestValid(int score, String review) {
+    private boolean checkRequestValid(double score, String review) {
         if (score > this.maxValue) {
             log.error("{} only allows max rating {} (config workflow-actions.xml), given rating of " +
                 "{} not allowed.", this.getClass().toString(), this.maxValue, score);
@@ -126,7 +143,6 @@ public class ScoreReviewAction extends ProcessingAction {
             options.add(SUBMIT_EDIT_METADATA);
         }
         options.add(RETURN_TO_POOL);
-
         return options;
     }
 
@@ -137,26 +153,18 @@ public class ScoreReviewAction extends ProcessingAction {
 
     @Override
     protected List<ActionAdvancedInfo> getAdvancedInfo() {
-        ScoreReviewActionAdvancedInfo scoreReviewActionAdvancedInfo = new ScoreReviewActionAdvancedInfo();
-        scoreReviewActionAdvancedInfo.setDescriptionRequired(descriptionRequired);
-        scoreReviewActionAdvancedInfo.setMaxValue(maxValue);
-        scoreReviewActionAdvancedInfo.setType(SUBMIT_SCORE);
-        scoreReviewActionAdvancedInfo.generateId(SUBMIT_SCORE);
-        return Collections.singletonList(scoreReviewActionAdvancedInfo);
+        ScoreReviewActionAdvancedInfo info = new ScoreReviewActionAdvancedInfo();
+        info.setDescriptionRequired(descriptionRequired);
+        info.setMaxValue(maxValue);
+        info.setType(SUBMIT_SCORE);
+        info.generateId(SUBMIT_SCORE);
+        return Collections.singletonList(info);
     }
 
-    /**
-     * Setter that sets the descriptionRequired property from workflow-actions.xml
-     * @param descriptionRequired boolean whether a description is required
-     */
     public void setDescriptionRequired(boolean descriptionRequired) {
         this.descriptionRequired = descriptionRequired;
     }
 
-    /**
-     * Setter that sets the maxValue property from workflow-actions.xml
-     * @param maxValue integer of the maximum allowed value
-     */
     public void setMaxValue(int maxValue) {
         this.maxValue = maxValue;
     }

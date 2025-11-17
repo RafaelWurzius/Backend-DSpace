@@ -15,11 +15,28 @@ public class SelectReviewerActionAdvancedInfoRest extends AdvancedInfoRest {
 
     private String groupId;
 
+    // 🆕 Novo campo indicando se a seleção de orientador é necessária
+    private boolean advisorRequired;
+
     public String getGroup() {
         return groupId;
     }
 
     public void setGroup(String groupId) {
         this.groupId = groupId;
+    }
+
+    // 🆕 Getter e Setter para advisorRequired
+    public boolean isAdvisorRequired() {
+        return advisorRequired;
+    }
+
+    public void setAdvisorRequired(boolean advisorRequired) {
+        this.advisorRequired = advisorRequired;
+    }
+
+    @Override
+    public String getType() {
+        return "selectrevieweractionadvancedinfo";
     }
 }
